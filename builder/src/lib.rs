@@ -1,17 +1,43 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
+use syn::spanned::Spanned;
+
+fn is_option(ty: &syn::Type) -> bool {
+    let syn::Type::Path(tp) = ty else {
+        return false;
+    };
+
+    tp.path
+        .segments
+        .first()
+        .is_some_and(|s| s.ident == "Option")
+}
 
 #[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
 
-    let mut commands_fields_q = Vec::new();
-    let mut methods_q = Vec::new();
-    let mut commands_builder_q = Vec::new();
+    let mut qbuilder_field_declarations = Vec::new();
+    let mut qbuilder_method_definitions = Vec::new();
+    let mut qbuilder_field_assignments = Vec::new();
+    let mut qbuilder_build_assignments = Vec::new();
 
     match input.data {
         syn::Data::Struct(data_struct) => {
             for field in data_struct.fields {
+                let field_ident = field.ident.clone();
+
+                // Wrap non-option T to Option<T>, otherwise don't wrap it
+                let field_ty = field.ty.clone();
+                let field_ty = if is_option(&field_ty) {
+                    quote! { #field_ty }
+                } else {
+                    quote! { ::core::option::Option<#field_ty> }
+                };
+                qbuilder_field_declarations.push(quote! {
+                    pub #field_ident: #field_ty,
+                });
+
                 if let Some(ref field_id) = field.ident {
                     let mut agg = None;
 
@@ -26,6 +52,13 @@ pub fn derive(input: TokenStream) -> TokenStream {
                                             break;
                                         }
                                     }
+                                } else {
+                                    return syn::Error::new(
+                                        lp.span(),
+                                        "expected `builder(each = \"...\")`",
+                                    )
+                                    .to_compile_error()
+                                    .into();
                                 }
                             }
                         }
@@ -35,7 +68,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     if let Some((field_id, method_name)) = agg {
                         let method_name = format_ident!("{}", method_name.value());
                         if method_name != **field_id {
-                            methods_q.push(quote! {
+                            qbuilder_method_definitions.push(quote! {
                                 fn #method_name(&mut self, a: String) -> &mut Self {
                                     if let Some(s) = &mut self.#field_id {
                                         s.push(a);
@@ -46,7 +79,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                                 }
                             });
                         } else {
-                            methods_q.push(quote! {
+                            qbuilder_method_definitions.push(quote! {
                                 fn #field_id(&mut self, a: #ty) -> &mut Self {
                                     self.#field_id = Some(a);
                                     self
@@ -54,7 +87,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                             });
                         }
 
-                        commands_builder_q.push(quote! {
+                        qbuilder_field_assignments.push(quote! {
                             #field_id: Some(vec![]),
                         });
                     } else {
@@ -75,14 +108,14 @@ pub fn derive(input: TokenStream) -> TokenStream {
                                 }
                             }
                         }
-                        methods_q.push(quote! {
+                        qbuilder_method_definitions.push(quote! {
                             fn #field_id(&mut self, a: #field_ty) -> &mut Self {
                                 self.#field_id = Some(a);
                                 self
                             }
                         });
 
-                        commands_builder_q.push(quote! {
+                        qbuilder_field_assignments.push(quote! {
                             #field_id: None,
                         });
                     }
@@ -91,11 +124,11 @@ pub fn derive(input: TokenStream) -> TokenStream {
                         if let Some(fs) = type_path.path.segments.first() {
                             let error_message = format!("{} is not set", field_id);
                             if fs.ident.eq("Option") {
-                                commands_fields_q.push(quote! {
+                                qbuilder_build_assignments.push(quote! {
                                     #field_id: self.#field_id.clone(),
                                 });
                             } else {
-                                commands_fields_q.push(quote! {
+                                qbuilder_build_assignments.push(quote! {
                                     #field_id: self.#field_id.clone().ok_or(format!(#error_message).to_string())?,
                                 });
                             }
@@ -108,41 +141,29 @@ pub fn derive(input: TokenStream) -> TokenStream {
         syn::Data::Union(_) => todo!(),
     }
 
+    let struct_name = input.ident;
+    let builder_name = format_ident!("{}Builder", struct_name);
     quote! {
-        use std::error::Error;
-        impl Command {
-            pub fn builder () -> CommandBuilder {
-                CommandBuilder {
-                    #(#commands_builder_q)*
+        impl #struct_name {
+            pub fn builder () -> #builder_name {
+                #builder_name {
+                    #(#qbuilder_field_assignments)*
                 }
             }
         }
 
-        pub struct CommandBuilder {
-            executable: Option<String>,
-            args: Option<Vec<String>>,
-            env: Option<Vec<String>>,
-            current_dir: Option<String>,
+        pub struct #builder_name {
+            #(#qbuilder_field_declarations)*
         }
 
-        impl CommandBuilder {
-            fn build(&mut self) -> Result<Command, Box<dyn Error>> {
-                Ok(Command {
-                    #(#commands_fields_q)*
+        impl #builder_name {
+            fn build(&mut self) -> ::core::result::Result<#struct_name, ::std::boxed::Box<dyn ::core::error::Error>> {
+                Ok(#struct_name {
+                    #(#qbuilder_build_assignments)*
                 })
             }
 
-            //fn args(&mut self, args: Vec<String>) -> &mut Self {
-            //    self.args = Some(args);
-            //    self
-            //}
-
-            //fn env(&mut self, env: Vec<String>) -> &mut Self {
-            //    self.env = Some(env);
-            //    self
-            //}
-
-            #(#methods_q)*
+            #(#qbuilder_method_definitions)*
         }
     }
     .into()
