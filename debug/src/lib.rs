@@ -1,10 +1,10 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, spanned::Spanned, DeriveInput};
+use syn::{parse_macro_input, spanned::Spanned};
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
+    let input = parse_macro_input!(input as syn::DeriveInput);
 
     if let syn::Data::Struct(data) = input.data {
         let struct_name = input.ident;
@@ -18,9 +18,27 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     .into();
             };
             let field_name_str = field_name.to_string();
-            field_decls.push(quote! {
-                .field(#field_name_str, &self.#field_name)
-            });
+
+            let mut debug_arg = None;
+            for attr in field.attrs {
+                if let syn::Meta::NameValue(nv) = attr.meta {
+                    let left = &nv.path.segments.first().unwrap().ident;
+                    if left == "debug" {
+                        debug_arg = expr_get_lit_str(&nv.value).cloned();
+                    }
+                }
+            }
+
+            if let Some(debug_arg) = debug_arg {
+                let debug_arg = debug_arg.value();
+                field_decls.push(quote! {
+                    .field(#field_name_str, &::std::format_args!(#debug_arg, &self.#field_name))
+                });
+            } else {
+                field_decls.push(quote! {
+                    .field(#field_name_str, &self.#field_name)
+                });
+            }
         }
 
         quote! {
@@ -36,4 +54,13 @@ pub fn derive(input: TokenStream) -> TokenStream {
     } else {
         unimplemented!("Not implemented for non struct")
     }
+}
+
+fn expr_get_lit_str(e: &syn::Expr) -> Option<&syn::LitStr> {
+    if let syn::Expr::Lit(expr_lit) = e {
+        if let syn::Lit::Str(ref lit_str) = expr_lit.lit {
+            return Some(lit_str);
+        }
+    }
+    None
 }
