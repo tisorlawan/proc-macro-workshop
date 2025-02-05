@@ -17,5 +17,9 @@ trybuild = { version = "1.0.49", features = ["diff"] }
 
 [dependencies]
 quote = "1.0.38"
-syn = { version = "2.0.96", features = ["derive", "extra-traits", "full", "parsing"] }
-# TODO
+syn = { version = "2.0.96", features = [
+  "derive",
+  "extra-traits",
+  "full",
+  "parsing",
+] }
