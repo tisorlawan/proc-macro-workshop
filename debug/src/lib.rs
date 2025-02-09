@@ -41,8 +41,17 @@ pub fn derive(input: TokenStream) -> TokenStream {
             }
         }
 
+        // Adds `:Debug` for each generic type parameter
+        let mut generics = input.generics;
+        for param in &mut generics.params {
+            if let syn::GenericParam::Type(type_param) = param {
+                type_param.bounds.push(syn::parse_quote!(::std::fmt::Debug));
+            }
+        }
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
         quote! {
-            impl ::std::fmt::Debug for #struct_name {
+            impl #impl_generics ::std::fmt::Debug for #struct_name #ty_generics #where_clause {
                 fn fmt(&self, fmt: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                     fmt.debug_struct(#struct_name_str)
                         #(#field_decls)*
