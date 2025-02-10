@@ -2,11 +2,14 @@ use std::collections::HashSet;
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, spanned::Spanned};
+use syn::{
+    parse_macro_input, parse_quote, spanned::Spanned, DeriveInput, Expr, GenericArgument, Ident,
+    Lit, LitStr, PathArguments, Type,
+};
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as syn::DeriveInput);
+    let input = parse_macro_input!(input as DeriveInput);
 
     if let syn::Data::Struct(data) = input.data {
         let struct_name = input.ident;
@@ -27,9 +30,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
             let mut debug_arg = None;
             for attr in field.attrs {
                 if let syn::Meta::NameValue(nv) = attr.meta {
-                    let left = &nv.path.segments.first().unwrap().ident;
-                    if left == "debug" {
-                        debug_arg = expr_get_lit_str(&nv.value).cloned();
+                    if let Some(left) = &nv.path.segments.first() {
+                        if left.ident == "debug" {
+                            debug_arg = expr_get_lit_str(&nv.value).cloned();
+                        }
                     }
                 }
             }
@@ -64,7 +68,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 if !phantom_data_generic_type_params.contains(&type_param.ident)
                     || other_generic_type_params.contains(&type_param.ident)
                 {
-                    type_param.bounds.push(syn::parse_quote!(::std::fmt::Debug));
+                    type_param.bounds.push(parse_quote!(::std::fmt::Debug));
                 }
             }
         }
@@ -85,33 +89,29 @@ pub fn derive(input: TokenStream) -> TokenStream {
     }
 }
 
-fn expr_get_lit_str(e: &syn::Expr) -> Option<&syn::LitStr> {
-    if let syn::Expr::Lit(expr_lit) = e {
-        if let syn::Lit::Str(ref lit_str) = expr_lit.lit {
+fn expr_get_lit_str(e: &Expr) -> Option<&LitStr> {
+    if let Expr::Lit(expr_lit) = e {
+        if let Lit::Str(ref lit_str) = expr_lit.lit {
             return Some(lit_str);
         }
     }
     None
 }
 
-fn extract_phantom_data(ty: &syn::Type) -> Option<(syn::Ident, syn::Ident)> {
-    let syn::Type::Path(type_path) = ty else {
+fn extract_phantom_data(ty: &Type) -> Option<(Ident, Ident)> {
+    let Type::Path(type_path) = ty else {
         return None;
     };
 
     for segment in &type_path.path.segments {
-        let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        let PathArguments::AngleBracketed(args) = &segment.arguments else {
             return None;
         };
 
         for arg in &args.args {
-            if let syn::GenericArgument::Type(gen_type) = &arg {
-                if let syn::Type::Path(gen_type_path) = gen_type {
-                    let Some(t) = gen_type_path.path.segments.iter().next() else {
-                        return None;
-                    };
-                    return Some((segment.ident.clone(), t.ident.clone()));
-                }
+            if let GenericArgument::Type(Type::Path(gen_type_path)) = &arg {
+                let t = gen_type_path.path.segments.iter().next()?;
+                return Some((segment.ident.clone(), t.ident.clone()));
             }
         }
     }
