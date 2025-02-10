@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, spanned::Spanned};
@@ -11,6 +13,9 @@ pub fn derive(input: TokenStream) -> TokenStream {
         let struct_name_str = struct_name.to_string();
 
         let mut field_decls = Vec::new();
+        let mut phantom_data_generic_type_params = HashSet::new();
+        let mut other_generic_type_params = HashSet::new();
+
         for field in data.fields {
             let Some(field_name) = field.ident else {
                 return syn::Error::new(field.span(), "Field name must be provided")
@@ -39,13 +44,28 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     .field(#field_name_str, &self.#field_name)
                 });
             }
+
+            // Check for generic usage
+            if let Some((generic_type, generic_type_param)) = extract_phantom_data(&field.ty) {
+                if generic_type == "PhantomData" {
+                    phantom_data_generic_type_params.insert(generic_type_param);
+                } else {
+                    other_generic_type_params.insert(generic_type_param);
+                }
+            }
         }
 
         // Adds `:Debug` for each generic type parameter
         let mut generics = input.generics;
         for param in &mut generics.params {
             if let syn::GenericParam::Type(type_param) = param {
-                type_param.bounds.push(syn::parse_quote!(::std::fmt::Debug));
+                // Don't add `:Debug` for generic type parameters that are not exclusively used in
+                // `PhantomData`
+                if !phantom_data_generic_type_params.contains(&type_param.ident)
+                    || other_generic_type_params.contains(&type_param.ident)
+                {
+                    type_param.bounds.push(syn::parse_quote!(::std::fmt::Debug));
+                }
             }
         }
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
@@ -71,5 +91,30 @@ fn expr_get_lit_str(e: &syn::Expr) -> Option<&syn::LitStr> {
             return Some(lit_str);
         }
     }
+    None
+}
+
+fn extract_phantom_data(ty: &syn::Type) -> Option<(syn::Ident, syn::Ident)> {
+    let syn::Type::Path(type_path) = ty else {
+        return None;
+    };
+
+    for segment in &type_path.path.segments {
+        let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+            return None;
+        };
+
+        for arg in &args.args {
+            if let syn::GenericArgument::Type(gen_type) = &arg {
+                if let syn::Type::Path(gen_type_path) = gen_type {
+                    let Some(t) = gen_type_path.path.segments.iter().next() else {
+                        return None;
+                    };
+                    return Some((segment.ident.clone(), t.ident.clone()));
+                }
+            }
+        }
+    }
+
     None
 }
